@@ -3,38 +3,41 @@ import mediapipe as mp
 import pyautogui
 import time
 import numpy as np
-from collections import deque
 
 # Initialize Mediapipe Hands
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(min_detection_confidence=0.8, min_tracking_confidence=0.7)
+hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.5, max_num_hands=2)
 mp_drawing = mp.solutions.drawing_utils
 
 # Get screen dimensions
 screen_width, screen_height = pyautogui.size()
 
-# Variables for click and scroll
-prev_time = 0
-clicking = False
+# Variables
+scroll_active = False
 scroll_start_y = None
-click_threshold = 0.1  # Adjust as needed
-scroll_threshold = 0.07
-scroll_speed_multiplier = 50
+volume_active = False
+last_copy_paste_time = 0
+copy_paste_cooldown = 2
+select_active = False
 
-# Smoothing parameters
-smoothing_window = 3
-index_x_history = deque(maxlen=smoothing_window)
-index_y_history = deque(maxlen=smoothing_window)
+# Thresholds (adjust as needed)
+scroll_threshold = 0.1
+volume_threshold = 0.15
+select_threshold = 0.1
+scroll_stop_threshold = 0.05  # To stop scrolling when fingers are too close
 
+# Helper functions
 def calculate_distance(point1, point2):
     return np.linalg.norm(np.array([point1.x, point1.y]) - np.array([point2.x, point2.y]))
 
-def smooth_coordinates(x, y):
-    index_x_history.append(x)
-    index_y_history.append(y)
-    smoothed_x = np.mean(index_x_history)
-    smoothed_y = np.mean(index_y_history)
-    return smoothed_x, smoothed_y
+def fingers_up_count(landmarks):
+    fingers_up = 0
+    if landmarks[mp_hands.HandLandmark.THUMB_TIP].y < landmarks[mp_hands.HandLandmark.THUMB_IP].y: fingers_up += 1
+    if landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.INDEX_FINGER_PIP].y: fingers_up += 1
+    if landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_PIP].y: fingers_up += 1
+    if landmarks[mp_hands.HandLandmark.RING_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.RING_FINGER_PIP].y: fingers_up += 1
+    if landmarks[mp_hands.HandLandmark.PINKY_TIP].y < landmarks[mp_hands.HandLandmark.PINKY_PIP].y: fingers_up += 1
+    return fingers_up
 
 cap = cv2.VideoCapture(0)
 
@@ -50,50 +53,78 @@ while cap.isOpened():
 
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
-            index_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-            thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]  # For click
-            middle_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP] #For Scroll
+            landmarks = hand_landmarks.landmark
+            # Extract landmarks for fingers
+            index_finger_tip = landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+            thumb_tip = landmarks[mp_hands.HandLandmark.THUMB_TIP]
+            middle_finger_tip = landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
+            pinky_finger_tip = landmarks[mp_hands.HandLandmark.PINKY_TIP]
 
+            # Convert landmarks to screen coordinates
             index_x_px = int(index_finger_tip.x * frame.shape[1])
             index_y_px = int(index_finger_tip.y * frame.shape[0])
             thumb_x_px = int(thumb_tip.x * frame.shape[1])
             thumb_y_px = int(thumb_tip.y * frame.shape[0])
             middle_x_px = int(middle_finger_tip.x * frame.shape[1])
             middle_y_px = int(middle_finger_tip.y * frame.shape[0])
+            pinky_x_px = int(pinky_finger_tip.x * frame.shape[1])
+            pinky_y_px = int(pinky_finger_tip.y * frame.shape[0])
 
-            # Smoothing
-            smoothed_x, smoothed_y = smooth_coordinates(index_finger_tip.x, index_finger_tip.y)
-            x = int(smoothed_x * screen_width)
-            y = int(smoothed_y * screen_height)
-            pyautogui.moveTo(x, y)
+            # --- Mouse Control using Index Finger ---
+            x = int(index_finger_tip.x * screen_width)
+            y = int(index_finger_tip.y * screen_height)
+            pyautogui.moveTo(x, y)  # Move the mouse pointer to the index finger's position
 
-            # Click Detection (Thumb and Index)
-            click_distance = calculate_distance(index_finger_tip, thumb_tip)
-            cv2.line(image, (index_x_px, index_y_px), (thumb_x_px, thumb_y_px), (0, 255, 0), 2)  # Green line
-            cv2.putText(image, f"Click Dist: {click_distance:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            current_time = time.time()
-            if click_distance < click_threshold and not clicking:
-                pyautogui.click()
-                clicking = True
-                prev_time = current_time
-                print("Click!")
-            elif click_distance >= click_threshold and clicking and (current_time - prev_time) > 0.5:
-                clicking = False
+            # --- Scrolling with 5 fingers up ---
+            fingers_up = fingers_up_count(landmarks)
 
-            # Scroll Detection (Index and Middle)
-            scroll_diff = abs(index_finger_tip.y - middle_finger_tip.y)
-            cv2.line(image, (index_x_px, index_y_px), (middle_x_px, middle_y_px), (255, 0, 0), 2)  # Blue line
-            cv2.putText(image, f"Scroll Diff: {scroll_diff:.2f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
-            if scroll_diff < scroll_threshold:
-                if scroll_start_y is not None:
-                    scroll_amount = int((scroll_start_y - index_finger_tip.y) * scroll_speed_multiplier)
+            if fingers_up == 5:  # If 5 fingers are up, scrolling is active
+                scroll_diff = abs(index_finger_tip.y - middle_finger_tip.y)
+                if scroll_diff > scroll_threshold:
+                    if not scroll_active:
+                        scroll_start_y = index_finger_tip.y
+                        scroll_active = True
+                    scroll_amount = int((scroll_start_y - index_finger_tip.y) * 100)
                     pyautogui.scroll(scroll_amount)
-                    print(f"Scrolling: {scroll_amount}")
-                scroll_start_y = index_finger_tip.y
+                    scroll_start_y = index_finger_tip.y
+                else:
+                    scroll_active = False
             else:
-                scroll_start_y = None
+                scroll_active = False
 
+            # --- Volume Control with thumb and pinky fingers ---
+            volume_diff = abs(thumb_tip.y - pinky_finger_tip.y)
+            if volume_diff < volume_threshold:
+                if not volume_active:
+                    volume_start_y = index_finger_tip.y
+                    volume_active = True
+                volume_change = int((volume_start_y - index_finger_tip.y) * 10)
+                if volume_change > 0:
+                    pyautogui.press('volumeup')
+                elif volume_change < 0:
+                    pyautogui.press('volumedown')
+                volume_start_y = index_finger_tip.y
+            else:
+                volume_active = False
+
+            # --- Select Text (Ctrl + A) - Left Hand: index + middle fingers ---
+            select_distance = calculate_distance(index_finger_tip, middle_finger_tip)
+            if select_distance < select_threshold:
+                if not select_active:
+                    select_active = True
+                    pyautogui.hotkey('ctrl', 'a')  # Select all
+            else:
+                select_active = False
+
+            # --- Copy Text (Ctrl + C) - Right Hand: index + middle fingers ---
+            if calculate_distance(index_finger_tip, middle_finger_tip) < select_threshold:
+                pyautogui.hotkey('ctrl', 'c')  # Copy
+
+            # --- Paste Text (Ctrl + V) - Right Hand: thumb + pinky fingers ---
+            if calculate_distance(thumb_tip, pinky_finger_tip) < select_threshold:
+                pyautogui.hotkey('ctrl', 'v')  # Paste
+
+            # Draw landmarks
             mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
     cv2.imshow('Hand Mouse', image)
