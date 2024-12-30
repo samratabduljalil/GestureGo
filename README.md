@@ -41,5 +41,6 @@ GestureGo is a Python-based computer vision project that utilizes hand gestures 
    ```bash
    git clone https://github.com/yourusername/GestureGo.git
    cd GestureGo
-Run
+## Run the script 
+```bash
 python GestureGo.py
