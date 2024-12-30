@@ -36,6 +36,8 @@ finger_dips = [mp_hands.HandLandmark.THUMB_IP,
                mp_hands.HandLandmark.RING_FINGER_DIP,
                mp_hands.HandLandmark.PINKY_DIP]
 
+last_screenshot_time = 0  # Timestamp of the last screenshot
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -60,8 +62,13 @@ while cap.isOpened():
             h, w, _ = frame.shape
             landmarks = hand_landmarks.landmark
 
-            # Right Hand (Volume Control)
-            if handedness == "Right":
+            # Detect palm orientation using wrist and middle finger MCP
+            wrist = landmarks[mp_hands.HandLandmark.WRIST]
+            middle_mcp = landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
+            palm_orientation = wrist.z < middle_mcp.z  # True = palm facing camera; False = back side
+
+            # Right Hand (Volume Control) - Only works with palm facing camera
+            if handedness == "Right" and palm_orientation:
                 thumb_tip = landmarks[mp_hands.HandLandmark.THUMB_TIP]
                 index_tip = landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP]
 
@@ -76,26 +83,31 @@ while cap.isOpened():
                 # Calculate distance
                 distance = hypot(index_coords[0] - thumb_coords[0], index_coords[1] - thumb_coords[1])
 
-                # Map distance to volume range
-                volume_level = np.interp(distance, [30, 300], [min_vol, max_vol])
+                # Adjusted range for smaller movements (distance range: 10 to 150)
+                volume_level = np.interp(distance, [10, 150], [min_vol, max_vol])
                 volume.SetMasterVolumeLevel(volume_level, None)
 
                 # Display volume level
-                volume_bar = np.interp(distance, [30, 300], [400, 150])
+                volume_bar = np.interp(distance, [10, 150], [400, 150])
+                volume_percentage = np.interp(volume_level, [min_vol, max_vol], [0, 100])  # Volume as percentage
                 cv2.rectangle(frame, (50, int(volume_bar)), (85, 400), (0, 255, 0), -1)
-                cv2.putText(frame, f'Vol: {int(volume_level)}', (40, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                cv2.putText(frame, f'Vol: {int(volume_percentage)}%', (40, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-            # Left Hand (Screenshot Capture)
-            elif handedness == "Left":
+            # Left Hand (Screenshot) - Only works with palm facing camera
+            elif handedness == "Left" and palm_orientation:
                 fingers_extended = []
                 for tip, dip in zip(finger_tips, finger_dips):
                     # Check if tip is above the dip for each finger
-                    fingers_extended.append(landmarks[tip].y < landmarks[dip].y)
+                    is_extended = landmarks[tip].y < landmarks[dip].y
+                    fingers_extended.append(is_extended)
 
-                if all(fingers_extended):  # All five fingers extended
-                    cv2.putText(frame, "Screenshot Taken!", (200, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                    pyautogui.screenshot(f"screenshot_{time.time()}.png")
-                    time.sleep(1)  # Prevent multiple screenshots in quick succession
+                # Screenshot Action (All five fingers extended)
+                if all(fingers_extended):
+                    current_time = time.time()
+                    if current_time - last_screenshot_time > 3:  # 3-second delay
+                        cv2.putText(frame, "Screenshot Taken", (200, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        pyautogui.screenshot(f"screenshot_{int(current_time)}.png")
+                        last_screenshot_time = current_time
 
     cv2.imshow("Hand Control", frame)
 
