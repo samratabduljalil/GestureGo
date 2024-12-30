@@ -1,135 +1,76 @@
 import cv2
-import mediapipe as mp
-import pyautogui
-import time
 import numpy as np
+import mediapipe as mp
+from math import hypot
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+from comtypes import CLSCTX_ALL
+from ctypes import cast, POINTER
 
-# Initialize Mediapipe Hands
+# Mediapipe initialization
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.5, max_num_hands=2)
-mp_drawing = mp.solutions.drawing_utils
+hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
+mp_draw = mp.solutions.drawing_utils
 
-# Get screen dimensions
-screen_width, screen_height = pyautogui.size()
+# Audio control initialization
+devices = AudioUtilities.GetSpeakers()
+interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+volume = cast(interface, POINTER(IAudioEndpointVolume))
+volume_range = volume.GetVolumeRange()
+min_vol, max_vol = volume_range[0], volume_range[1]
 
-# Variables
-scroll_active = False
-scroll_start_y = None
-volume_active = False
-last_copy_paste_time = 0
-copy_paste_cooldown = 2
-select_active = False
-
-# Thresholds (adjust as needed)
-scroll_threshold = 0.1
-volume_threshold = 0.15
-select_threshold = 0.1
-scroll_stop_threshold = 0.05  # To stop scrolling when fingers are too close
-
-# Helper functions
-def calculate_distance(point1, point2):
-    return np.linalg.norm(np.array([point1.x, point1.y]) - np.array([point2.x, point2.y]))
-
-def fingers_up_count(landmarks):
-    fingers_up = 0
-    if landmarks[mp_hands.HandLandmark.THUMB_TIP].y < landmarks[mp_hands.HandLandmark.THUMB_IP].y: fingers_up += 1
-    if landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.INDEX_FINGER_PIP].y: fingers_up += 1
-    if landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_PIP].y: fingers_up += 1
-    if landmarks[mp_hands.HandLandmark.RING_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.RING_FINGER_PIP].y: fingers_up += 1
-    if landmarks[mp_hands.HandLandmark.PINKY_TIP].y < landmarks[mp_hands.HandLandmark.PINKY_PIP].y: fingers_up += 1
-    return fingers_up
-
+# OpenCV video capture
 cap = cv2.VideoCapture(0)
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
-        continue
+        break
 
+    # Flip and convert to RGB
     frame = cv2.flip(frame, 1)
-    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(image)
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            landmarks = hand_landmarks.landmark
-            # Extract landmarks for fingers
-            index_finger_tip = landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-            thumb_tip = landmarks[mp_hands.HandLandmark.THUMB_TIP]
-            middle_finger_tip = landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-            pinky_finger_tip = landmarks[mp_hands.HandLandmark.PINKY_TIP]
+    # Process hand landmarks
+    result = hands.process(rgb_frame)
 
-            # Convert landmarks to screen coordinates
-            index_x_px = int(index_finger_tip.x * frame.shape[1])
-            index_y_px = int(index_finger_tip.y * frame.shape[0])
-            thumb_x_px = int(thumb_tip.x * frame.shape[1])
-            thumb_y_px = int(thumb_tip.y * frame.shape[0])
-            middle_x_px = int(middle_finger_tip.x * frame.shape[1])
-            middle_y_px = int(middle_finger_tip.y * frame.shape[0])
-            pinky_x_px = int(pinky_finger_tip.x * frame.shape[1])
-            pinky_y_px = int(pinky_finger_tip.y * frame.shape[0])
+    if result.multi_hand_landmarks:
+        for i, hand_landmarks in enumerate(result.multi_hand_landmarks):
+            # Check handedness (Right hand)
+            handedness = result.multi_handedness[i].classification[0].label
+            if handedness != "Right":
+                continue
 
-            # --- Mouse Control using Index Finger ---
-            x = int(index_finger_tip.x * screen_width)
-            y = int(index_finger_tip.y * screen_height)
-            pyautogui.moveTo(x, y)  # Move the mouse pointer to the index finger's position
+            # Draw landmarks on the right hand
+            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-            # --- Scrolling with 5 fingers up ---
-            fingers_up = fingers_up_count(landmarks)
+            # Get landmark positions for thumb and index finger tips
+            thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+            index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
 
-            if fingers_up == 5:  # If 5 fingers are up, scrolling is active
-                scroll_diff = abs(index_finger_tip.y - middle_finger_tip.y)
-                if scroll_diff > scroll_threshold:
-                    if not scroll_active:
-                        scroll_start_y = index_finger_tip.y
-                        scroll_active = True
-                    scroll_amount = int((scroll_start_y - index_finger_tip.y) * 100)
-                    pyautogui.scroll(scroll_amount)
-                    scroll_start_y = index_finger_tip.y
-                else:
-                    scroll_active = False
-            else:
-                scroll_active = False
+            h, w, _ = frame.shape
+            thumb_coords = (int(thumb_tip.x * w), int(thumb_tip.y * h))
+            index_coords = (int(index_tip.x * w), int(index_tip.y * h))
 
-            # --- Volume Control with thumb and pinky fingers ---
-            volume_diff = abs(thumb_tip.y - pinky_finger_tip.y)
-            if volume_diff < volume_threshold:
-                if not volume_active:
-                    volume_start_y = index_finger_tip.y
-                    volume_active = True
-                volume_change = int((volume_start_y - index_finger_tip.y) * 10)
-                if volume_change > 0:
-                    pyautogui.press('volumeup')
-                elif volume_change < 0:
-                    pyautogui.press('volumedown')
-                volume_start_y = index_finger_tip.y
-            else:
-                volume_active = False
+            # Draw circles and line
+            cv2.circle(frame, thumb_coords, 10, (255, 0, 0), -1)
+            cv2.circle(frame, index_coords, 10, (255, 0, 0), -1)
+            cv2.line(frame, thumb_coords, index_coords, (0, 255, 0), 3)
 
-            # --- Select Text (Ctrl + A) - Left Hand: index + middle fingers ---
-            select_distance = calculate_distance(index_finger_tip, middle_finger_tip)
-            if select_distance < select_threshold:
-                if not select_active:
-                    select_active = True
-                    pyautogui.hotkey('ctrl', 'a')  # Select all
-            else:
-                select_active = False
+            # Calculate distance
+            distance = hypot(index_coords[0] - thumb_coords[0], index_coords[1] - thumb_coords[1])
 
-            # --- Copy Text (Ctrl + C) - Right Hand: index + middle fingers ---
-            if calculate_distance(index_finger_tip, middle_finger_tip) < select_threshold:
-                pyautogui.hotkey('ctrl', 'c')  # Copy
+            # Map distance to volume range
+            volume_level = np.interp(distance, [30, 300], [min_vol, max_vol])
+            volume.SetMasterVolumeLevel(volume_level, None)
 
-            # --- Paste Text (Ctrl + V) - Right Hand: thumb + pinky fingers ---
-            if calculate_distance(thumb_tip, pinky_finger_tip) < select_threshold:
-                pyautogui.hotkey('ctrl', 'v')  # Paste
+            # Display volume level
+            volume_bar = np.interp(distance, [30, 300], [400, 150])
+            cv2.rectangle(frame, (50, int(volume_bar)), (85, 400), (0, 255, 0), -1)
+            cv2.putText(frame, f'Vol: {int(volume_level)}', (40, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-            # Draw landmarks
-            mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+    cv2.imshow("Volume Control", frame)
 
-    cv2.imshow('Hand Mouse', image)
-
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    if cv2.waitKey(1) & 0xFF == 27:  # Press 'Esc' to exit
         break
 
 cap.release()
